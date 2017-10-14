@@ -2,32 +2,87 @@ import pickle
 import cv2
 from scipy.ndimage.measurements import label
 from utils import get_color_converter, color_hist, bin_spatial
+from keras.models import load_model
 
 class VehicleDetector(object):
     def __init__(self, model, threshold=2):
         # Load model
         with open("{}.p".format(model), "rb") as file:
-            model = pickle.load(file)
+            config = pickle.load(file)
         
-        self.svc            = model["svc"]
-        self.X_scaler       = model["scaler"]
-        self.orient         = model["orient"]
-        self.pix_per_cell   = model["pix_per_cell"]
-        self.cell_per_block = model["cell_per_block"]
-        self.spatial_size   = model["spatial_size"]
-        self.hist_bins      = model["hist_bins"]
-        self.color_space    = model['color_space']
-        self.hog_channel    = model['hog_channel']
+        self.model          = load_model('{}.h5'.format(model)) # use Feed forward neural network (Getting better result)
+        self.X_scaler       = config["scaler"]
+        self.orient         = config["orient"]
+        self.pix_per_cell   = config["pix_per_cell"]
+        self.cell_per_block = config["cell_per_block"]
+        self.spatial_size   = config["spatial_size"]
+        self.hist_bins      = config["hist_bins"]
+        self.color_space    = config['color_space']
+        self.hog_channel    = config['hog_channel']
+        self.spatial_feat   = config['spatial_feat']
+        self.hist_feat      = config['hist_feat']
+        self.hog_feat       = config['hog_feat']
 
         
         self.current_frame  = 0
         self.heatmap        = None
         self.threshold      = threshold
         self.convert_color  = get_color_converter(self.color_space)
-        #self.windows        = [(400,500,1), (400,600,1.5) ,(480,656,2.),(480,656,2.5)]
-        #self.windows        = [(380,600,1),(400,656,1.5),(400,656,2.0),(400,656,2.5)]
-        self.windows        = [(360, 560, 1.5), (400, 600, 1.8), (440, 700, 2.5)]
-    
+        self.regions        =  [([400,480],(85, 80), (0.75, 0.75)),([380,530], (130, 130), (0.75, 0.75)),
+                                ([410,530],(95, 95), (0.5, 0.5)), ([400,600], (230, 100), (0.1, 0.1))]
+
+
+    def single_img_features(self, image):    
+        #1) Define an empty list to receive features
+        img_features = []
+        feature_image = self.convert_color(image)
+        
+        #3) Compute spatial features if flag is set
+        if self.spatial_feat == True:
+            spatial_features = bin_spatial(feature_image, size=self.patial_size)
+            #4) Append features to list
+            img_features.append(spatial_features)
+        #5) Compute histogram features if flag is set
+        if self.hist_feat == True:
+            hist_features = color_hist(feature_image, nbins=self.hist_bins)
+            #6) Append features to list
+            img_features.append(hist_features)
+        #7) Compute HOG features if flag is set
+        if self.hog_feat == True:
+            if self.hog_channel == 'ALL':
+                hog_features = []
+                for channel in range(feature_image.shape[2]):
+                    hog_features.extend(self.get_hog_features(feature_image[:,:,channel]))      
+            else:
+                hog_features = self.get_hog_features(feature_image[:,:,self.hog_channel])
+
+            #8) Append features to list
+            img_features.append(hog_features)
+
+        #9) Return concatenated array of features
+        return np.concatenate(img_features)
+
+    def search_windows(self, image, windows):
+
+        #1) Create an empty list to receive positive detection windows
+        on_windows = []
+        #2) Iterate over all windows in the list
+        for window in windows:
+            #3) Extract the test window from original image
+            test_img = cv2.resize(image[window[0][1]:window[1][1], window[0][0]:window[1][0]], (64, 64))      
+            #4) Extract features for that window using single_img_features()
+            features = self.single_img_features(test_img)
+            #5) Scale extracted features to be fed to classifier
+            test_features = self.X_scaler.transform(np.array(features).reshape(1, -1))
+            #6) Predict using your classifier
+            prediction = self.model.predict(test_features)[0,0]
+            #7) If positive (prediction == 1) then save the window
+            if prediction >= 0.5:
+                on_windows.append(window)
+        #8) Return windows for positive detections
+        return on_windows
+
+
     def apply_heat(self, image, heatmap, boxes):
         for box in boxes:
             # Add += 1 for all pixels inside each bbox
@@ -60,68 +115,53 @@ class VehicleDetector(object):
                        visualise=False, feature_vector=False)
         return features
 
-    def find_car(self, image, ystart, ystop, scale):
-        rectangles = []
-        img        = image.astype(np.float32)/255
-        
-        img_tosearch = img[ystart:ystop,:,:]
-        ctrans_tosearch = self.convert_color(img_tosearch)
-        if scale != 1:
-            imshape = ctrans_tosearch.shape
-            ctrans_tosearch = cv2.resize(ctrans_tosearch, (np.int(imshape[1]/scale), np.int(imshape[0]/scale)))
-            
-        ch1 = ctrans_tosearch[:,:,0]
-        ch2 = ctrans_tosearch[:,:,1]
-        ch3 = ctrans_tosearch[:,:,2]
+    def slide_window(self, image, y_start_stop=[None, None], 
+                     xy_window=(64, 64), xy_overlap=(0.5, 0.5)):
 
-        # Define blocks and steps as above
-        nxblocks = (ch1.shape[1] // self.pix_per_cell) - self.cell_per_block + 1
-        nyblocks = (ch1.shape[0] // self.pix_per_cell) - self.cell_per_block + 1
-        nfeat_per_block = self.orient * self.cell_per_block ** 2
-        # 64 was the orginal sampling rate, with 8 cells and 8 pix per cell
-        window = 64
-        nblocks_per_window  = (window // self.pix_per_cell) - self.cell_per_block + 1
-        cells_per_step      = 2  # Instead of overlap, define how many cells to step
-        nxsteps = (nxblocks - nblocks_per_window) // cells_per_step
-        nysteps = (nyblocks - nblocks_per_window) // cells_per_step
-
-        
-        # Compute individual channel HOG features for the entire image
-        hog1 = self.get_hog_features(ch1)
-        hog2 = self.get_hog_features(ch2)
-        hog3 = self.get_hog_features(ch3)
-        
-        for xb in range(nxsteps):
-            for yb in range(nysteps):
-                ypos = yb*cells_per_step
-                xpos = xb*cells_per_step
-                # Extract HOG for this patch
-                hog_feat1    = hog1[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_feat2    = hog2[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_feat3    = hog3[ypos:ypos+nblocks_per_window, xpos:xpos+nblocks_per_window].ravel() 
-                hog_features = np.hstack((hog_feat1, hog_feat2, hog_feat3))
-
-                xleft = xpos*self.pix_per_cell
-                ytop = ypos*self.pix_per_cell
-
-                # Extract the image patch
-                subimg = cv2.resize(ctrans_tosearch[ytop:ytop+window, xleft:xleft+window],(64,64))
-            
-                # Get color features
-                spatial_features = bin_spatial(subimg, size=self.spatial_size)
-                hist_features    = color_hist(subimg, nbins=self.hist_bins)
-
-                # Scale features and make a prediction
-                test_features = self.X_scaler.transform(np.hstack((spatial_features, hist_features, hog_features)).reshape(1, -1))    
-                test_prediction = self.svc.predict(test_features)
+    
+        x_start_stop = [0, image.shape[1]]
+        # If y start/stop positions not defined, set to image size
+        if y_start_stop[0] == None:
+            y_start_stop[0] = 0
+        if y_start_stop[1] == None:
+            y_start_stop[1] = image.shape[0]
+        # Compute the span of the region to be searched    
+        xspan = x_start_stop[1] - x_start_stop[0]
+        yspan = y_start_stop[1] - y_start_stop[0]
+        # Compute the number of pixels per step in x/y
+        nx_pix_per_step = np.int(xy_window[0]*(1 - xy_overlap[0]))
+        ny_pix_per_step = np.int(xy_window[1]*(1 - xy_overlap[1]))
+        # Compute the number of windows in x/y
+        nx_buffer = np.int(xy_window[0]*(xy_overlap[0]))
+        ny_buffer = np.int(xy_window[1]*(xy_overlap[1]))
+        nx_windows = np.int((xspan-nx_buffer)/nx_pix_per_step) 
+        ny_windows = np.int((yspan-ny_buffer)/ny_pix_per_step) 
+        # Initialize a list to append window positions to
+        window_list = []
+        # Loop through finding x and y window positions
+        # Note: you could vectorize this step, but in practice
+        # you'll be considering windows one by one with your
+        # classifier, so looping makes sense
+        for ys in range(ny_windows):
+            for xs in range(nx_windows):
+                # Calculate window position
+                startx = xs*nx_pix_per_step + x_start_stop[0]
+                endx = startx + xy_window[0]
+                starty = ys*ny_pix_per_step + y_start_stop[0]
+                endy = starty + xy_window[1]
                 
-                if test_prediction == 1:
-                    xbox_left = np.int(xleft*scale)
-                    ytop_draw = np.int(ytop*scale)
-                    win_draw = np.int(window*scale)
-                    rectangles.append(((xbox_left, ytop_draw+ystart),(xbox_left+win_draw,ytop_draw+win_draw+ystart))) 
-                    
-        return rectangles
+                # Append window position to list
+                window_list.append(((startx, starty), (endx, endy)))
+        # Return the list of windows
+        return window_list
+
+    def find_car(self, image, y_start_stop=[None, None], 
+                     xy_window=(64, 64), xy_overlap=(0.5, 0.5)):
+
+        windows = self.slide_window(image, 
+                                    y_start_stop=y_start_stop, 
+                                    xy_window=xy_window, xy_overlap=xy_overlap)
+        return self.search_windows(image, windows)
         
 
     def mark_cars(self, frame):
@@ -130,9 +170,9 @@ class VehicleDetector(object):
         if (self.heatmap  is None) or (self.current_frame % 10 == 0):
             # Create new heatmap.
             heatmap = np.zeros_like(frame[:,:,0]).astype(np.float)
-            for ystart, ystop, scale in self.windows:
+            for y_start_stop, xy_window, xy_overlap in self.regions:
                 # Find cars in  the frame
-                boxes = self.find_car(frame,ystart,ystop, scale)
+                boxes = self.find_car(frame, y_start_stop, xy_window, xy_overlap)
                 # Apply heat map to remove false positive
                 heatmap = self.apply_heat(frame, heatmap, boxes)
             # Zero out pixels below the threshold
