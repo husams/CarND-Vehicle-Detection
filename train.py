@@ -5,6 +5,7 @@ import pickle
 import argparse
 from sklearn.svm import LinearSVC
 from data import preprocess_data
+from model import Model
 
 
 def fit_model(config):
@@ -13,31 +14,32 @@ def fit_model(config):
     notcars = glob.glob('./non-vehicles/*/*.png')
 
     # Load imagea nd extract features
-    X_train, X_test, y_train, y_test, X_scaler = preprocess_data(cars, notcars, config)
+    X_train, X_test, X_valid, y_train, y_test, y_valid, X_scaler = preprocess_data(cars, notcars, config)
 
     print('Using:',config["color_space"], "color space", config["orient"],'orientations',config["pix_per_cell"],
          'pixels per cell and', config["cell_per_block"],'cells per block')
     print('Feature vector length:', len(X_train[0]))
 
-    with open('dataset.p', 'wb') as out:
-        pickle.dump({"X_train": X_train,
-                     "y_trian": y_train,
-                     "X_test":  X_test,
-                     "y_test": y_test}, out)
-    # Create SVM leab=ner model
-    svc = LinearSVC()
+    # Create feed forward neural network
+    model = Model(X_train.shape[1], learning_rate=config['learning_rate'])
 
     # Train model
+    print("Train with {} learning rate , batch size {} and {} epochs".format(config['learning_rate'],config['batch_size'], config['epochs']))
     t=time.time()
-    svc.fit(X_train, y_train)
+    model.fit(X_train,y_train, X_valid=X_valid, y_valid=y_valid, batch_size=config['batch_size'], epochs=config['epochs'])
     t2 = time.time()
-    print(round(t2-t, 2), 'Seconds to train SVC...')
-    # Check the score of the SVC
-    print('Test Accuracy of SVC = ', round(svc.score(X_test, y_test), 4))
+    print(round(t2-t, 2), 'Seconds to train feed foward neral network..')
+    # Check the score of the model
+    metric = model.model.evaluate(X_test, y_test, batch_size=128)
+    print("")
+    print('Test Losss {0:.4f}, Accuracy = {1:.4f}'.format(*metric))
+
+    # Store model
+    model.save('clf')
 
     # Store scale and trained model
-    config["svc"]    = svc
     config["scaler"] = X_scaler
+
 
     return config
 
@@ -58,7 +60,7 @@ def str2Channel(value):
 
 def parse_arguments():
     parser = argparse.ArgumentParser(description='Train liner SVM model .')
-    parser.add_argument('--model', dest="model", type=str, default="svn", help='Model name')
+    parser.add_argument('--model', dest="model", type=str, default="model", help='Model name')
     parser.add_argument('--color_space', dest="color_space", type=str, default="HSV", help='color')
     parser.add_argument('--spatial_size', dest="spatial_size", type=int, default=16, help='spatial size')
     parser.add_argument('--hist_bins', dest="hist_bins", type=int, default=16, help="histogram bins")
@@ -69,6 +71,9 @@ def parse_arguments():
     parser.add_argument('--no-spatial_feat', dest='spatial_feat', default=True, action='store_false')
     parser.add_argument('--no-hog_feat', dest='hog_feat', default=True, action='store_false')
     parser.add_argument('--no-hist_feat', dest='hist_feat', default=True, action='store_false')
+    parser.add_argument('--learning_rate', dest="learning_rate", type=float, default=0.0001, help="learning rate to train neural network")    
+    parser.add_argument('--epochs', dest="epochs", type=int, default=3, help="number of epochs")
+    parser.add_argument('--batch_size', dest="batch_size", type=int, default=64, help="batch size to train to train neural network")
     args = parser.parse_args()
 
     # Build model configurtion
@@ -83,7 +88,10 @@ def parse_arguments():
         "hog_channel":      args.hog_channel,
         "spatial_feat":     args.spatial_feat,
         "hog_feat":         args.hog_feat,
-        "hist_feat":        args.hist_feat
+        "hist_feat":        args.hist_feat,
+        "learning_rate":    args.learning_rate,
+        "epochs":           args.epochs,
+        "batch_size":       args.batch_size
     }
 
     return config

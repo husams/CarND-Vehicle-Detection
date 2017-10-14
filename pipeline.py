@@ -10,7 +10,7 @@ class VehicleDetector(object):
         with open("{}.p".format(model), "rb") as file:
             config = pickle.load(file)
         
-        self.model          = load_model('{}.h5'.format(model)) # use Feed forward neural network (Getting better result)
+        self.model          = load_model('clf.h5') # use Feed forward neural network (Getting better result)
         self.X_scaler       = config["scaler"]
         self.orient         = config["orient"]
         self.pix_per_cell   = config["pix_per_cell"]
@@ -28,8 +28,10 @@ class VehicleDetector(object):
         self.heatmap        = None
         self.threshold      = threshold
         self.convert_color  = get_color_converter(self.color_space)
-        self.regions        =  [([400,480],(85, 80), (0.75, 0.75)),([380,530], (130, 130), (0.75, 0.75)),
-                                ([410,530],(95, 95), (0.5, 0.5)), ([400,600], (230, 100), (0.1, 0.1))]
+        self.regions        =  [([None, None],[400,480],(85, 80), (0.75, 0.75)),
+                                ([None, None],[380,530], (130, 130), (0.75, 0.75)),
+                                ([None, None],[410,530],(95, 95), (0.5, 0.5)), 
+                                ([None, None],[400,600], (230, 100), (0.1, 0.1))]
 
 
     def single_img_features(self, image):    
@@ -115,12 +117,13 @@ class VehicleDetector(object):
                        visualise=False, feature_vector=False)
         return features
 
-    def slide_window(self, image, y_start_stop=[None, None], 
+    def slide_window(self, image, x_start_stop=[None, None], y_start_stop=[None, None], 
                      xy_window=(64, 64), xy_overlap=(0.5, 0.5)):
-
-    
-        x_start_stop = [0, image.shape[1]]
         # If y start/stop positions not defined, set to image size
+        if x_start_stop[0] == None:
+            x_start_stop[0] = 0
+        if x_start_stop[1] == None:
+            x_start_stop[1] = image.shape[1]
         if y_start_stop[0] == None:
             y_start_stop[0] = 0
         if y_start_stop[1] == None:
@@ -155,10 +158,11 @@ class VehicleDetector(object):
         # Return the list of windows
         return window_list
 
-    def find_car(self, image, y_start_stop=[None, None], 
+    def find_car(self, image, x_start_stop=[None,None], y_start_stop=[None, None], 
                      xy_window=(64, 64), xy_overlap=(0.5, 0.5)):
 
         windows = self.slide_window(image, 
+                                    x_start_stop=x_start_stop,
                                     y_start_stop=y_start_stop, 
                                     xy_window=xy_window, xy_overlap=xy_overlap)
         return self.search_windows(image, windows)
@@ -170,9 +174,9 @@ class VehicleDetector(object):
         if (self.heatmap  is None) or (self.current_frame % 10 == 0):
             # Create new heatmap.
             heatmap = np.zeros_like(frame[:,:,0]).astype(np.float)
-            for y_start_stop, xy_window, xy_overlap in self.regions:
+            for x_start_stop, y_start_stop, xy_window, xy_overlap in self.regions:
                 # Find cars in  the frame
-                boxes = self.find_car(frame, y_start_stop, xy_window, xy_overlap)
+                boxes = self.find_car(frame, x_start_stop, y_start_stop, xy_window, xy_overlap)
                 # Apply heat map to remove false positive
                 heatmap = self.apply_heat(frame, heatmap, boxes)
             # Zero out pixels below the threshold
@@ -182,6 +186,6 @@ class VehicleDetector(object):
         # create label from the heatmap
         labels = label(self.heatmap)
         
-        cv2.putText(frame, "frame: {}".format(self.current_frame), (20,60),  cv2.FONT_HERSHEY_DUPLEX, 1.5, (255,255,255), 2, cv2.LINE_AA)
+        #cv2.putText(frame, "frame: {}".format(self.current_frame), (20,60),  cv2.FONT_HERSHEY_DUPLEX, 1.5, (255,255,255), 2, cv2.LINE_AA)
         # Draw new labels
         return self.draw_labeled_bboxes(frame, labels)
