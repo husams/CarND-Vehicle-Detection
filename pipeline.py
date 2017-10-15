@@ -1,5 +1,7 @@
 import pickle
 import cv2
+import numpy as np
+from skimage.feature import hog
 from scipy.ndimage.measurements import label
 from utils import get_color_converter, color_hist, bin_spatial
 from keras.models import load_model
@@ -28,10 +30,10 @@ class VehicleDetector(object):
         self.heatmap        = None
         self.threshold      = threshold
         self.convert_color  = get_color_converter(self.color_space)
-        self.regions        =  [([None, None],[400,480],(85, 80), (0.75, 0.75)),
-                                ([None, None],[380,530], (130, 130), (0.75, 0.75)),
-                                ([None, None],[410,530],(95, 95), (0.5, 0.5)), 
-                                ([None, None],[400,600], (230, 100), (0.1, 0.1))]
+        self.regions        =  [([450, None],[400,480],(85, 80), (0.75, 0.75)),
+                                ([350, None],[380,530], (130, 130), (0.75, 0.75)),
+                                ([350, None],[410,530],(95, 95), (0.5, 0.5)), 
+                                ([200, None],[400,600], (230, 100), (0.1, 0.1))]
 
 
     def single_img_features(self, image):    
